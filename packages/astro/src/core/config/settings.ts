@@ -5,7 +5,7 @@ import { getContentPaths } from '../../content/index.js';
 import createPreferences from '../../preferences/index.js';
 import type { AstroSettings } from '../../types/astro.js';
 import type { AstroConfig } from '../../types/public/config.js';
-import { markdownContentEntryType } from '../../vite-plugin-markdown/content-entry-type.js';
+import { getContentEntryType as getMarkdownContentEntryType } from '../../vite-plugin-markdown/content-entry-type.js';
 import { getDefaultClientDirectives } from '../client-directive/index.js';
 import { AstroError, AstroErrorData } from '../errors/index.js';
 import { formatYAMLException, isYAMLException } from '../errors/utils.js';
@@ -28,7 +28,7 @@ export function createBaseSettings(config: AstroConfig): AstroSettings {
 		serverIslandMap: new Map(),
 		serverIslandNameMap: new Map(),
 		pageExtensions: ['.astro', '.html', ...SUPPORTED_MARKDOWN_FILE_EXTENSIONS],
-		contentEntryTypes: [markdownContentEntryType],
+		contentEntryTypes: [getMarkdownContentEntryType({ astroConfig: config })],
 		dataEntryTypes: [
 			{
 				extensions: ['.json'],

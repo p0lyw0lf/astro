@@ -2,6 +2,7 @@ import fs from 'node:fs';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 import {
 	type MarkdownProcessor,
+	type ParseFrontmatterResult,
 	createMarkdownProcessor,
 	isFrontmatterValid,
 } from '@astrojs/markdown-remark';
@@ -63,93 +64,18 @@ export default function markdown({ settings, logger }: AstroPluginOptions): Plug
 					processor = createMarkdownProcessor(settings.config.markdown);
 				}
 
-				const renderResult = await (await processor).render(raw.content, {
-					// @ts-expect-error passing internal prop
-					fileURL,
-					frontmatter: raw.frontmatter,
-				});
-
-				// Improve error message for invalid astro frontmatter
-				if (!isFrontmatterValid(renderResult.metadata.frontmatter)) {
-					throw new AstroError(AstroErrorData.InvalidFrontmatterInjectionError);
-				}
-
-				let html = renderResult.code;
-				const { headings, imagePaths: rawImagePaths, frontmatter } = renderResult.metadata;
-
-				// Add default charset for markdown pages
 				const isMarkdownPage = isPage(fileURL, settings);
-				const charset = isMarkdownPage ? '<meta charset="utf-8">' : '';
-
-				// Resolve all the extracted images from the content
-				const imagePaths: MarkdownImagePath[] = [];
-				for (const imagePath of rawImagePaths) {
-					imagePaths.push({
-						raw: imagePath,
-						safeName: shorthash(imagePath),
-					});
-				}
-
-				const { layout } = frontmatter;
-
-				if (frontmatter.setup) {
-					logger.warn(
-						'markdown',
-						`[${id}] Astro now supports MDX! Support for components in ".md" (or alternative extensions like ".markdown") files using the "setup" frontmatter is no longer enabled by default. Migrate this file to MDX.`,
-					);
-				}
-
-				const code = `
-				import { unescapeHTML, spreadAttributes, createComponent, render, renderComponent, maybeRenderHead } from ${JSON.stringify(
-					astroServerRuntimeModulePath,
-				)};
-				import { AstroError, AstroErrorData } from ${JSON.stringify(astroErrorModulePath)};
-				${layout ? `import Layout from ${JSON.stringify(layout)};` : ''}
-
-				${
-					// Only include the code relevant to `astro:assets` if there's images in the file
-					imagePaths.length > 0
-						? getMarkdownCodeForImages(imagePaths, html)
-						: `const html = () => ${JSON.stringify(html)};`
-				}
-
-				export const frontmatter = ${JSON.stringify(frontmatter)};
-				export const file = ${JSON.stringify(fileId)};
-				export const url = ${JSON.stringify(fileUrl)};
-				export function rawContent() {
-					return ${JSON.stringify(raw.content)};
-				}
-				export async function compiledContent() {
-					return await html();
-				}
-				export function getHeadings() {
-					return ${JSON.stringify(headings)};
-				}
-
-				export const Content = createComponent((result, _props, slots) => {
-					const { layout, ...content } = frontmatter;
-					content.file = file;
-					content.url = url;
-
-					return ${
-						layout
-							? `render\`\${renderComponent(result, 'Layout', Layout, {
-								file,
-								url,
-								content,
-								frontmatter: content,
-								headings: getHeadings(),
-								rawContent,
-								compiledContent,
-								'server:root': true,
-							}, {
-								'default': () => render\`\${unescapeHTML(html())}\`
-							})}\`;`
-							: `render\`${charset}\${maybeRenderHead(result)}\${unescapeHTML(html())}\`;`
-					}
+				const resolvedProcessor = await processor;
+				const code = await getModuleCode({
+					processor: resolvedProcessor,
+					raw,
+					id,
+					fileId,
+					fileUrl,
+					fileURL,
+					logger,
+					isMarkdownPage,
 				});
-				export default Content;
-				`;
 
 				return {
 					code,
@@ -163,4 +89,118 @@ export default function markdown({ settings, logger }: AstroPluginOptions): Plug
 			}
 		},
 	};
+}
+
+export async function getModuleCode({
+	processor,
+	raw,
+	id,
+	fileId,
+	fileUrl,
+	fileURL,
+	logger,
+	isMarkdownPage,
+}: {
+	processor: MarkdownProcessor;
+	/** Vite ID */
+	id: string;
+	/** Astro file ID */
+	fileId: string;
+	/** Internal Astro file path */
+	fileUrl: string | undefined;
+	/** Resolved Astro file URL */
+	fileURL: URL;
+	raw: ParseFrontmatterResult;
+	// TODO: make this required
+	logger?: Logger;
+	isMarkdownPage?: boolean;
+}): Promise<string> {
+	const renderResult = await processor.render(raw.content, {
+		// @ts-expect-error passing internal prop
+		fileURL,
+		frontmatter: raw.frontmatter,
+	});
+
+	// Improve error message for invalid astro frontmatter
+	if (!isFrontmatterValid(renderResult.metadata.frontmatter)) {
+		throw new AstroError(AstroErrorData.InvalidFrontmatterInjectionError);
+	}
+
+	let html = renderResult.code;
+	const { headings, imagePaths: rawImagePaths, frontmatter } = renderResult.metadata;
+
+	// Add default charset for markdown pages
+	const charset = isMarkdownPage ? '<meta charset="utf-8">' : '';
+
+	// Resolve all the extracted images from the content
+	const imagePaths: MarkdownImagePath[] = [];
+	for (const imagePath of rawImagePaths) {
+		imagePaths.push({
+			raw: imagePath,
+			safeName: shorthash(imagePath),
+		});
+	}
+
+	const { layout } = frontmatter;
+
+	if (frontmatter.setup && logger) {
+		logger.warn(
+			'markdown',
+			`[${id}] Astro now supports MDX! Support for components in ".md" (or alternative extensions like ".markdown") files using the "setup" frontmatter is no longer enabled by default. Migrate this file to MDX.`,
+		);
+	}
+
+	const code = `
+		import { unescapeHTML, spreadAttributes, createComponent, render, renderComponent, maybeRenderHead } from ${JSON.stringify(
+			astroServerRuntimeModulePath,
+		)};
+		import { AstroError, AstroErrorData } from ${JSON.stringify(astroErrorModulePath)};
+		${layout ? `import Layout from ${JSON.stringify(layout)};` : ''}
+
+				${
+					// Only include the code relevant to `astro:assets` if there's images in the file
+					imagePaths.length > 0
+						? getMarkdownCodeForImages(imagePaths, html)
+						: `const html = () => ${JSON.stringify(html)};`
+				}
+
+		export const frontmatter = ${JSON.stringify(frontmatter)};
+		export const file = ${JSON.stringify(fileId)};
+		export const url = ${JSON.stringify(fileUrl)};
+		export function rawContent() {
+			return ${JSON.stringify(raw.content)};
+		}
+		export async function compiledContent() {
+			return await html();
+		}
+		export function getHeadings() {
+			return ${JSON.stringify(headings)};
+		}
+
+		export const Content = createComponent((result, _props, slots) => {
+			const { layout, ...content } = frontmatter;
+			content.file = file;
+			content.url = url;
+
+			return ${
+				layout
+					? `render\`\${renderComponent(result, 'Layout', Layout, {
+						file,
+						url,
+						content,
+						frontmatter: content,
+						headings: getHeadings(),
+						rawContent,
+						compiledContent,
+						'server:root': true,
+					}, {
+						'default': () => render\`\${unescapeHTML(html())}\`
+					})}\`;`
+					: `render\`${charset}\${maybeRenderHead(result)}\${unescapeHTML(html())}\`;`
+			}
+		});
+		export default Content;
+		`;
+
+	return code;
 }
